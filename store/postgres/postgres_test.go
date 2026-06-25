@@ -247,6 +247,52 @@ func TestRollupUsesServiceExpectedSlots(t *testing.T) {
 	}
 }
 
+func TestClaimAlertEvent(t *testing.T) {
+	ctx := context.Background()
+	store, cleanup := openTestStore(t)
+	defer cleanup()
+
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	decision, err := store.ClaimAlertEvent(ctx, uptime.AlertState{
+		ServiceID:  "api",
+		Status:     uptime.AlertStatusUp,
+		LastSeenAt: now,
+		CheckedAt:  now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Notify {
+		t.Fatalf("initial up should not notify: %+v", decision)
+	}
+
+	decision, err = store.ClaimAlertEvent(ctx, uptime.AlertState{
+		ServiceID:  "api",
+		Status:     uptime.AlertStatusDown,
+		LastSeenAt: now.Add(-time.Minute),
+		CheckedAt:  now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.Notify || decision.PreviousStatus != uptime.AlertStatusUp {
+		t.Fatalf("down decision = %+v", decision)
+	}
+
+	decision, err = store.ClaimAlertEvent(ctx, uptime.AlertState{
+		ServiceID:  "api",
+		Status:     uptime.AlertStatusDown,
+		LastSeenAt: now.Add(-time.Minute),
+		CheckedAt:  now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Notify {
+		t.Fatalf("duplicate down should not notify: %+v", decision)
+	}
+}
+
 func openTestStore(t *testing.T) (*Store, func()) {
 	t.Helper()
 	dsn := os.Getenv("UPTIME_POSTGRES_DSN")

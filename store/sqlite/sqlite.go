@@ -286,6 +286,64 @@ ORDER BY service_id
 	return statuses, rows.Err()
 }
 
+func (s *Store) ClaimAlertEvent(ctx context.Context, state uptime.AlertState) (uptime.AlertDecision, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return uptime.AlertDecision{}, err
+	}
+	defer rollback(tx)
+
+	var previous string
+	err = tx.QueryRowContext(ctx, `
+SELECT status
+FROM uptime_alert_state
+WHERE service_id = ?
+`, state.ServiceID).Scan(&previous)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO uptime_alert_state (service_id, status, last_seen_at, updated_at)
+VALUES (?, ?, ?, ?)
+`, state.ServiceID, state.Status, unixNano(state.LastSeenAt), unixNano(state.CheckedAt)); err != nil {
+			return uptime.AlertDecision{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return uptime.AlertDecision{}, err
+		}
+		return uptime.AlertDecision{
+			Notify: state.NotifyOnFirstDown && state.Status == uptime.AlertStatusDown,
+		}, nil
+	}
+	if err != nil {
+		return uptime.AlertDecision{}, err
+	}
+
+	if previous == state.Status {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE uptime_alert_state
+SET last_seen_at = ?, updated_at = ?
+WHERE service_id = ?
+`, unixNano(state.LastSeenAt), unixNano(state.CheckedAt), state.ServiceID); err != nil {
+			return uptime.AlertDecision{}, err
+		}
+		return uptime.AlertDecision{}, tx.Commit()
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE uptime_alert_state
+SET status = ?, last_seen_at = ?, updated_at = ?
+WHERE service_id = ?
+`, state.Status, unixNano(state.LastSeenAt), unixNano(state.CheckedAt), state.ServiceID); err != nil {
+		return uptime.AlertDecision{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return uptime.AlertDecision{}, err
+	}
+	return uptime.AlertDecision{
+		Notify:         true,
+		PreviousStatus: previous,
+	}, nil
+}
+
 func (s *Store) Close() error {
 	if s.db == nil {
 		return nil

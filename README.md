@@ -120,7 +120,50 @@ func main() {
 }
 ```
 
-You can also pass `postgres.Config{DSN: "postgres://..."}`. The PostgreSQL store creates its schema, tables, and indexes automatically. The default table names are `uptime_services`, `uptime_instances`, `uptime_samples`, and `uptime_daily`; use `TablePrefix` or `Tables` for custom names.
+You can also pass `postgres.Config{DSN: "postgres://..."}`. The PostgreSQL store creates its schema, tables, and indexes automatically. The default table names are `uptime_services`, `uptime_instances`, `uptime_samples`, `uptime_daily`, and `uptime_alert_state`; use `TablePrefix` or `Tables` for custom names.
+
+## Alert Hook
+
+Alerts are optional and disabled by default. Configure `Alert.Hook` to receive deduplicated service status transitions:
+
+```go
+up, err := uptime.New(uptime.Config{
+	ServiceID: "dashboard",
+	Store:    store,
+	Alert: uptime.AlertConfig{
+		Hook: func(ctx context.Context, event uptime.AlertEvent) error {
+			log.Printf("%s changed from %s to %s", event.ServiceID, event.PreviousStatus, event.CurrentStatus)
+			return nil
+		},
+	},
+})
+```
+
+Built-in SQLite and PostgreSQL stores persist alert state, so when several instances share one store only one instance claims a given status transition. The first observed state seeds the alert state and does not notify by default; set `NotifyOnFirstDown` if an already-down service should notify on first observation.
+
+The hook is for delivery only. Send Slack, email, webhooks, or custom messages from user code.
+
+## External Probe
+
+Core `uptime` records in-process heartbeats. External HTTP checks live in the optional `probe` package:
+
+```go
+p, err := probe.New(probe.Config{
+	ServiceID:      "homepage-probe",
+	ServiceName:    "Homepage",
+	URL:            "https://example.com/health",
+	ExpectedStatus: []int{http.StatusOK},
+	Interval:       30 * time.Second,
+	Timeout:        5 * time.Second,
+	Store:          store,
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer p.Close()
+```
+
+A successful probe writes a heartbeat for its synthetic service. A failed probe writes nothing, so missing slots naturally appear as downtime in the existing dashboard.
 
 ## Configuration
 

@@ -48,10 +48,11 @@ type Config struct {
 }
 
 type TableNames struct {
-	Services  string
-	Instances string
-	Samples   string
-	Daily     string
+	Services   string
+	Instances  string
+	Samples    string
+	Daily      string
+	AlertState string
 }
 
 type Store struct {
@@ -63,15 +64,17 @@ type Store struct {
 type resolvedTables struct {
 	schema string
 
-	services  string
-	instances string
-	samples   string
-	daily     string
+	services   string
+	instances  string
+	samples    string
+	daily      string
+	alertState string
 
-	qServices  string
-	qInstances string
-	qSamples   string
-	qDaily     string
+	qServices   string
+	qInstances  string
+	qSamples    string
+	qDaily      string
+	qAlertState string
 }
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -356,6 +359,65 @@ ORDER BY service_id
 	return statuses, rows.Err()
 }
 
+func (s *Store) ClaimAlertEvent(ctx context.Context, state uptime.AlertState) (uptime.AlertDecision, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return uptime.AlertDecision{}, err
+	}
+	defer rollback(tx)
+
+	var previous string
+	err = tx.QueryRowContext(ctx, fmt.Sprintf(`
+SELECT status
+FROM %s
+WHERE service_id = $1
+FOR UPDATE
+`, s.tables.qAlertState), state.ServiceID).Scan(&previous)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+INSERT INTO %s (service_id, status, last_seen_at, updated_at)
+VALUES ($1, $2, $3, $4)
+`, s.tables.qAlertState), state.ServiceID, state.Status, unixNano(state.LastSeenAt), unixNano(state.CheckedAt)); err != nil {
+			return uptime.AlertDecision{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return uptime.AlertDecision{}, err
+		}
+		return uptime.AlertDecision{
+			Notify: state.NotifyOnFirstDown && state.Status == uptime.AlertStatusDown,
+		}, nil
+	}
+	if err != nil {
+		return uptime.AlertDecision{}, err
+	}
+
+	if previous == state.Status {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+UPDATE %s
+SET last_seen_at = $1, updated_at = $2
+WHERE service_id = $3
+`, s.tables.qAlertState), unixNano(state.LastSeenAt), unixNano(state.CheckedAt), state.ServiceID); err != nil {
+			return uptime.AlertDecision{}, err
+		}
+		return uptime.AlertDecision{}, tx.Commit()
+	}
+
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+UPDATE %s
+SET status = $1, last_seen_at = $2, updated_at = $3
+WHERE service_id = $4
+`, s.tables.qAlertState), state.Status, unixNano(state.LastSeenAt), unixNano(state.CheckedAt), state.ServiceID); err != nil {
+		return uptime.AlertDecision{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return uptime.AlertDecision{}, err
+	}
+	return uptime.AlertDecision{
+		Notify:         true,
+		PreviousStatus: previous,
+	}, nil
+}
+
 func (s *Store) Close() error {
 	if s.db == nil {
 		return nil
@@ -415,10 +477,11 @@ func resolveTables(config Config) (resolvedTables, error) {
 		prefix = defaultTablePrefix
 	}
 	names := TableNames{
-		Services:  prefix + "services",
-		Instances: prefix + "instances",
-		Samples:   prefix + "samples",
-		Daily:     prefix + "daily",
+		Services:   prefix + "services",
+		Instances:  prefix + "instances",
+		Samples:    prefix + "samples",
+		Daily:      prefix + "daily",
+		AlertState: prefix + "alert_state",
 	}
 	if config.Tables.Services != "" {
 		names.Services = config.Tables.Services
@@ -432,12 +495,16 @@ func resolveTables(config Config) (resolvedTables, error) {
 	if config.Tables.Daily != "" {
 		names.Daily = config.Tables.Daily
 	}
+	if config.Tables.AlertState != "" {
+		names.AlertState = config.Tables.AlertState
+	}
 
 	for label, name := range map[string]string{
-		"services table":  names.Services,
-		"instances table": names.Instances,
-		"samples table":   names.Samples,
-		"daily table":     names.Daily,
+		"services table":    names.Services,
+		"instances table":   names.Instances,
+		"samples table":     names.Samples,
+		"daily table":       names.Daily,
+		"alert state table": names.AlertState,
 	} {
 		if err := validateIdent(label, name); err != nil {
 			return resolvedTables{}, err
@@ -445,15 +512,17 @@ func resolveTables(config Config) (resolvedTables, error) {
 	}
 
 	return resolvedTables{
-		schema:     schema,
-		services:   names.Services,
-		instances:  names.Instances,
-		samples:    names.Samples,
-		daily:      names.Daily,
-		qServices:  quoteTable(schema, names.Services),
-		qInstances: quoteTable(schema, names.Instances),
-		qSamples:   quoteTable(schema, names.Samples),
-		qDaily:     quoteTable(schema, names.Daily),
+		schema:      schema,
+		services:    names.Services,
+		instances:   names.Instances,
+		samples:     names.Samples,
+		daily:       names.Daily,
+		alertState:  names.AlertState,
+		qServices:   quoteTable(schema, names.Services),
+		qInstances:  quoteTable(schema, names.Instances),
+		qSamples:    quoteTable(schema, names.Samples),
+		qDaily:      quoteTable(schema, names.Daily),
+		qAlertState: quoteTable(schema, names.AlertState),
 	}, nil
 }
 
@@ -492,6 +561,12 @@ func (t resolvedTables) schemaStatements() []string {
 			finalized BOOLEAN NOT NULL,
 			PRIMARY KEY (service_id, day)
 		)`, t.qDaily),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+			service_id TEXT PRIMARY KEY,
+			status TEXT NOT NULL,
+			last_seen_at BIGINT NOT NULL,
+			updated_at BIGINT NOT NULL
+		)`, t.qAlertState),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s(service_id)`, quoteIdent(indexName(t.instances, "service")), t.qInstances),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s(service_id, day)`, quoteIdent(indexName(t.samples, "service_day")), t.qSamples),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s(day)`, quoteIdent(indexName(t.samples, "day")), t.qSamples),

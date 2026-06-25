@@ -34,6 +34,9 @@ type Uptime struct {
 	maintenanceMu      sync.Mutex
 	lastMaintenance    time.Time
 	lastMaintenanceDay string
+
+	alertMu        sync.Mutex
+	lastAlertCheck time.Time
 }
 
 // New initializes the store, writes the first heartbeat, and starts recording.
@@ -164,6 +167,7 @@ func (u *Uptime) writeHeartbeat(ctx context.Context, now time.Time) error {
 	if err := u.runMaintenance(ctx, now, false); err != nil {
 		return err
 	}
+	u.evaluateAlerts(ctx, now)
 	u.clearLastError()
 	return nil
 }
@@ -230,6 +234,66 @@ func (u *Uptime) serviceIntervals(ctx context.Context) (map[string]time.Duration
 		intervals[service.ID] = u.serviceSampleInterval(service)
 	}
 	return intervals, nil
+}
+
+func (u *Uptime) evaluateAlerts(ctx context.Context, now time.Time) {
+	if u.config.Alert.Hook == nil {
+		return
+	}
+
+	u.alertMu.Lock()
+	if !u.lastAlertCheck.IsZero() && now.Sub(u.lastAlertCheck) < u.config.Alert.CheckInterval {
+		u.alertMu.Unlock()
+		return
+	}
+	u.lastAlertCheck = now
+	u.alertMu.Unlock()
+
+	stateStore, ok := u.store.(AlertStateStore)
+	if !ok {
+		u.config.Logger.Printf("uptime: alert hook requires alert state support")
+		return
+	}
+
+	services, err := u.store.ListServices(ctx)
+	if err != nil {
+		u.config.Logger.Printf("uptime: list services for alerts: %v", err)
+		return
+	}
+	for _, service := range services {
+		interval := u.serviceSampleInterval(service)
+		status := currentStatus(now, service.LastSeenAt, interval)
+		decision, err := stateStore.ClaimAlertEvent(ctx, AlertState{
+			ServiceID:         service.ID,
+			Status:            status,
+			LastSeenAt:        service.LastSeenAt,
+			CheckedAt:         now,
+			NotifyOnFirstDown: u.config.Alert.NotifyOnFirstDown,
+		})
+		if err != nil {
+			u.config.Logger.Printf("uptime: claim alert event for %s: %v", service.ID, err)
+			continue
+		}
+		if !decision.Notify {
+			continue
+		}
+		event := AlertEvent{
+			ServiceID:      service.ID,
+			ServiceName:    service.Name,
+			Description:    service.Description,
+			PreviousStatus: decision.PreviousStatus,
+			CurrentStatus:  status,
+			LastSeenAt:     service.LastSeenAt.UTC(),
+			DetectedAt:     now.UTC(),
+			SampleInterval: interval,
+		}
+		if status == AlertStatusDown && !service.LastSeenAt.IsZero() {
+			event.DownFor = now.Sub(service.LastSeenAt)
+		}
+		if err := u.config.Alert.Hook(ctx, event); err != nil {
+			u.config.Logger.Printf("uptime: alert hook for %s: %v", service.ID, err)
+		}
+	}
 }
 
 func (u *Uptime) setLastError(err error) {

@@ -40,6 +40,12 @@ var schemaStatements = []string{
 		finalized INTEGER NOT NULL,
 		PRIMARY KEY (service_id, day)
 	)`,
+	`CREATE TABLE IF NOT EXISTS uptime_alert_state (
+		service_id TEXT PRIMARY KEY,
+		status TEXT NOT NULL,
+		last_seen_at BIGINT NOT NULL,
+		updated_at BIGINT NOT NULL
+	)`,
 	`CREATE INDEX IF NOT EXISTS idx_instances_service
 		ON instances(service_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_uptime_samples_service_day

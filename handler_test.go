@@ -229,11 +229,119 @@ func TestBuildStatusUsesServiceSampleInterval(t *testing.T) {
 	}
 }
 
+func TestAlertHookDeduplicatesTransitions(t *testing.T) {
+	store := &memoryStore{}
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	store.services["api"] = Service{
+		ID:             "api",
+		Name:           "API",
+		CreatedAt:      now.Add(-time.Hour),
+		LastSeenAt:     now,
+		SampleInterval: time.Second,
+	}
+
+	var events []AlertEvent
+	cfg, err := (Config{
+		ServiceID:      "viewer",
+		SampleInterval: time.Second,
+		Store:          store,
+		Alert: AlertConfig{
+			Hook: func(_ context.Context, event AlertEvent) error {
+				events = append(events, event)
+				return nil
+			},
+		},
+	}).normalized()
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &Uptime{config: cfg, store: store}
+
+	up.evaluateAlerts(context.Background(), now)
+	if len(events) != 0 {
+		t.Fatalf("initial up emitted events: %+v", events)
+	}
+
+	store.services["api"] = Service{
+		ID:             "api",
+		Name:           "API",
+		CreatedAt:      now.Add(-time.Hour),
+		LastSeenAt:     now.Add(-3 * time.Second),
+		SampleInterval: time.Second,
+	}
+	up.evaluateAlerts(context.Background(), now.Add(time.Second))
+	up.evaluateAlerts(context.Background(), now.Add(2*time.Second))
+	if len(events) != 1 {
+		t.Fatalf("expected one down event, got %+v", events)
+	}
+	if events[0].PreviousStatus != AlertStatusUp || events[0].CurrentStatus != AlertStatusDown {
+		t.Fatalf("bad down event: %+v", events[0])
+	}
+
+	store.services["api"] = Service{
+		ID:             "api",
+		Name:           "API",
+		CreatedAt:      now.Add(-time.Hour),
+		LastSeenAt:     now.Add(3 * time.Second),
+		SampleInterval: time.Second,
+	}
+	up.evaluateAlerts(context.Background(), now.Add(3*time.Second))
+	if len(events) != 2 {
+		t.Fatalf("expected resolved event, got %+v", events)
+	}
+	if events[1].PreviousStatus != AlertStatusDown || events[1].CurrentStatus != AlertStatusUp {
+		t.Fatalf("bad resolve event: %+v", events[1])
+	}
+}
+
+func TestAlertHookNotifyOnFirstDown(t *testing.T) {
+	store := &memoryStore{}
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	store.services["api"] = Service{
+		ID:             "api",
+		Name:           "API",
+		CreatedAt:      now.Add(-time.Hour),
+		LastSeenAt:     now.Add(-10 * time.Second),
+		SampleInterval: time.Second,
+	}
+
+	events := 0
+	cfg, err := (Config{
+		ServiceID:      "viewer",
+		SampleInterval: time.Second,
+		Store:          store,
+		Alert: AlertConfig{
+			NotifyOnFirstDown: true,
+			Hook: func(context.Context, AlertEvent) error {
+				events++
+				return nil
+			},
+		},
+	}).normalized()
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &Uptime{config: cfg, store: store}
+	up.evaluateAlerts(context.Background(), now)
+	if events != 1 {
+		t.Fatalf("events = %d", events)
+	}
+}
+
 type memoryStore struct {
-	mu       sync.Mutex
-	services map[string]Service
-	samples  map[string]map[string]map[int64]struct{}
-	queryErr error
+	mu          sync.Mutex
+	services    map[string]Service
+	samples     map[string]map[string]map[int64]struct{}
+	alertStates map[string]AlertState
+	queryErr    error
 }
 
 func (s *memoryStore) Init(context.Context) error {
@@ -244,6 +352,9 @@ func (s *memoryStore) Init(context.Context) error {
 	}
 	if s.samples == nil {
 		s.samples = make(map[string]map[string]map[int64]struct{})
+	}
+	if s.alertStates == nil {
+		s.alertStates = make(map[string]AlertState)
 	}
 	return nil
 }
@@ -323,6 +434,27 @@ func (s *memoryStore) QueryTodaySamples(_ context.Context, options QueryTodaySam
 		})
 	}
 	return statuses, nil
+}
+
+func (s *memoryStore) ClaimAlertEvent(_ context.Context, state AlertState) (AlertDecision, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, ok := s.alertStates[state.ServiceID]
+	if !ok {
+		s.alertStates[state.ServiceID] = state
+		return AlertDecision{
+			Notify: state.NotifyOnFirstDown && state.Status == AlertStatusDown,
+		}, nil
+	}
+	if previous.Status == state.Status {
+		s.alertStates[state.ServiceID] = state
+		return AlertDecision{}, nil
+	}
+	s.alertStates[state.ServiceID] = state
+	return AlertDecision{
+		Notify:         true,
+		PreviousStatus: previous.Status,
+	}, nil
 }
 
 func (s *memoryStore) Close() error {

@@ -63,6 +63,7 @@ type Config struct {
 
 	Store Store
 
+	Alert  AlertConfig
 	UI     UIConfig
 	Logger Logger
 }
@@ -189,6 +190,17 @@ func (c Config) normalized() (Config, error) {
 	}
 	if c.UI.GreenThreshold < c.UI.YellowThreshold {
 		return Config{}, errors.New("uptime: green threshold must be greater than or equal to yellow threshold")
+	}
+	if c.Alert.Hook != nil {
+		if _, ok := c.Store.(AlertStateStore); !ok {
+			return Config{}, errors.New("uptime: alert hook requires a store that supports alert state")
+		}
+		if c.Alert.CheckInterval == 0 {
+			c.Alert.CheckInterval = c.SampleInterval
+		}
+		if c.Alert.CheckInterval < time.Second {
+			return Config{}, errors.New("uptime: alert check interval must be at least 1s")
+		}
 	}
 	if c.Logger == nil {
 		c.Logger = log.Default()
