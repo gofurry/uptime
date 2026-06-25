@@ -13,9 +13,6 @@ const messages = {
     uptime: "Uptime",
     slots: "Up slots",
     downtime: "Estimated downtime",
-    status: "Status",
-    finalized: "Finalized",
-    today: "Today, not finalized",
     noData: "No data"
   },
   "zh-CN": {
@@ -28,9 +25,6 @@ const messages = {
     uptime: "在线率",
     slots: "在线槽位",
     downtime: "估算离线时间",
-    status: "状态",
-    finalized: "已归档",
-    today: "今日，未归档",
     noData: "无数据"
   }
 };
@@ -115,6 +109,13 @@ function cardRow(label, value) {
   return item;
 }
 
+function cardNote(value) {
+  const item = document.createElement("span");
+  item.className = "hovercard-note";
+  item.textContent = value;
+  return item;
+}
+
 function dayMarkup(day) {
   const button = document.createElement("button");
   button.type = "button";
@@ -143,13 +144,12 @@ function renderHoverCard(bar) {
   title.textContent = bar.dataset.day || "";
   card.appendChild(title);
   if (bar.dataset.hasData !== "true") {
-    card.appendChild(cardRow(t("status"), t("noData")));
+    card.appendChild(cardNote(t("noData")));
     return;
   }
   card.appendChild(cardRow(t("uptime"), bar.dataset.rate || "0.00%"));
   card.appendChild(cardRow(t("slots"), (bar.dataset.upSlots || "0") + " / " + (bar.dataset.expectedSlots || "0")));
   card.appendChild(cardRow(t("downtime"), bar.dataset.downtime || "0s"));
-  card.appendChild(cardRow(t("status"), bar.dataset.finalized === "true" ? t("finalized") : t("today")));
 }
 
 function placeHoverCard(bar) {

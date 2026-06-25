@@ -71,6 +71,54 @@ func main() {
 - `http://localhost:8080/uptime`
 - `http://localhost:8080/uptime/api/status`
 
+## Fiber
+
+`uptime` 基于 `net/http`。Fiber 基于 `fasthttp`，因此最稳妥的集成方式是在启动阶段创建一个 `uptime` 实例，然后通过 Fiber 官方 adaptor 暴露 uptime handler。
+
+> 重要：不要在 Fiber handler 内部调用 `uptime.New`。每个 `Uptime` 实例都会打开 store，并启动一个后台 heartbeat goroutine。
+
+```go
+package main
+
+import (
+	"log"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/adaptor"
+	"github.com/gofurry/uptime"
+	"github.com/gofurry/uptime/store/sqlite"
+)
+
+func main() {
+	up, err := uptime.New(uptime.Config{
+		ServiceID:   "demo-api",
+		ServiceName: "Demo API",
+		Store: sqlite.New(sqlite.Config{
+			Path: "./uptime.db",
+		}),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer up.Close()
+
+	app := fiber.New()
+	uptimeHandler := adaptor.HTTPHandler(up.Handler())
+	app.All("/uptime", uptimeHandler)
+	app.All("/uptime/*", uptimeHandler)
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("hello")
+	})
+
+	log.Fatal(app.Listen(":8080"))
+}
+```
+
+打开 `http://localhost:8080/uptime`。
+
+`/uptime/*` 路由用于 `/uptime/api/status`，dashboard 刷新和自定义客户端都会用到它。`uptime` 通过自己的 heartbeat ticker 记录服务可用性，因此不需要包装每一个 Fiber 业务路由。
+
 ## 模拟数据
 
 生成一个包含多个服务、多个实例和 90 天历史数据的本地 `uptime.db`：

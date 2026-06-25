@@ -361,6 +361,8 @@ button:hover:not(.bar) {
   grid-auto-columns: minmax(7px, 1fr);
   gap: 4px;
   align-items: end;
+  min-width: 0;
+  max-width: 100%;
   min-height: 44px;
   overflow: visible;
 }
@@ -475,6 +477,12 @@ button:hover:not(.bar) {
   font-weight: 800;
   text-align: right;
 }
+.hovercard-note {
+  display: block;
+  padding: 2px 0 1px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
 footer {
   margin-top: 20px;
   color: var(--muted);
@@ -559,7 +567,18 @@ footer {
   }
   .status-line { justify-self: end; }
   .service { grid-template-columns: 1fr; }
-  .bars { grid-auto-columns: minmax(6px, 1fr); gap: 3px; }
+  .bars {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    min-height: 0;
+    gap: 3px;
+  }
+  .bar {
+    flex: 0 0 6px;
+    width: 6px;
+    height: 24px;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .header-divider:after { animation: none; }

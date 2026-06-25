@@ -72,6 +72,54 @@ Open:
 - `http://localhost:8080/uptime`
 - `http://localhost:8080/uptime/api/status`
 
+## Fiber
+
+`uptime` is built on `net/http`. Fiber is based on `fasthttp`, so the safest integration is to create one `uptime` instance during startup and expose the uptime handler through Fiber's official adaptor.
+
+> Important: do not call `uptime.New` inside a Fiber handler. Each `Uptime` instance opens the store and starts a background heartbeat goroutine.
+
+```go
+package main
+
+import (
+	"log"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/adaptor"
+	"github.com/gofurry/uptime"
+	"github.com/gofurry/uptime/store/sqlite"
+)
+
+func main() {
+	up, err := uptime.New(uptime.Config{
+		ServiceID:   "demo-api",
+		ServiceName: "Demo API",
+		Store: sqlite.New(sqlite.Config{
+			Path: "./uptime.db",
+		}),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer up.Close()
+
+	app := fiber.New()
+	uptimeHandler := adaptor.HTTPHandler(up.Handler())
+	app.All("/uptime", uptimeHandler)
+	app.All("/uptime/*", uptimeHandler)
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("hello")
+	})
+
+	log.Fatal(app.Listen(":8080"))
+}
+```
+
+Open `http://localhost:8080/uptime`.
+
+The `/uptime/*` route is needed for `/uptime/api/status`, which is used by the dashboard refresh and by custom clients. `uptime` records service availability from its own heartbeat ticker, so you do not need to wrap every Fiber business route.
+
 ## Demo Data
 
 Generate a local `uptime.db` with multiple services, multiple instances, and 90 days of history:
