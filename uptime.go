@@ -37,6 +37,11 @@ type Uptime struct {
 
 	alertMu        sync.Mutex
 	lastAlertCheck time.Time
+
+	snapshotMu       sync.Mutex
+	snapshotCache    Snapshot
+	snapshotCachedAt time.Time
+	snapshotHasCache bool
 }
 
 // New initializes the store, writes the first heartbeat, and starts recording.

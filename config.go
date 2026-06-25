@@ -63,9 +63,10 @@ type Config struct {
 
 	Store Store
 
-	Alert  AlertConfig
-	UI     UIConfig
-	Logger Logger
+	Alert    AlertConfig
+	Snapshot SnapshotConfig
+	UI       UIConfig
+	Logger   Logger
 }
 
 // UIConfig controls the built-in status page.
@@ -83,6 +84,22 @@ type UIConfig struct {
 	YellowThreshold float64
 
 	ShowInstanceDetails bool
+}
+
+// SnapshotConfig controls the in-memory snapshot cache used by CachedSnapshot
+// and the built-in dashboard/API handlers.
+type SnapshotConfig struct {
+	// CacheTTL controls how long a cached snapshot is reused. It defaults to
+	// SampleInterval. Set DisableCache to true for a direct store query on every
+	// CachedSnapshot call.
+	CacheTTL time.Duration
+
+	// DisableCache makes CachedSnapshot behave like Snapshot.
+	DisableCache bool
+
+	// DisableStaleIfError returns store errors instead of a stale snapshot when
+	// a refresh fails and a previous snapshot is available.
+	DisableStaleIfError bool
 }
 
 // Logger is the small logging contract used by uptime.
@@ -150,6 +167,12 @@ func (c Config) normalized() (Config, error) {
 	}
 	if c.Timezone == nil {
 		c.Timezone = time.Local
+	}
+	if c.Snapshot.CacheTTL == 0 {
+		c.Snapshot.CacheTTL = c.SampleInterval
+	}
+	if !c.Snapshot.DisableCache && c.Snapshot.CacheTTL < time.Second {
+		return Config{}, errors.New("uptime: snapshot cache ttl must be at least 1s")
 	}
 	if c.UI.Path == "" {
 		c.UI.Path = defaultUIPath

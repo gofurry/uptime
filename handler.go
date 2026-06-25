@@ -33,7 +33,7 @@ func (u *Uptime) serveHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (u *Uptime) serveStatusJSON(w http.ResponseWriter, r *http.Request) {
-	status, err := u.buildStatus(r.Context(), time.Now())
+	status, err := u.CachedSnapshot(r.Context())
 	if err != nil {
 		http.Error(w, "uptime status unavailable", http.StatusInternalServerError)
 		return
@@ -50,7 +50,7 @@ func (u *Uptime) serveStatusJSON(w http.ResponseWriter, r *http.Request) {
 }
 
 func (u *Uptime) serveDashboard(w http.ResponseWriter, r *http.Request) {
-	status, err := u.buildStatus(r.Context(), time.Now())
+	status, err := u.CachedSnapshot(r.Context())
 	if err != nil {
 		http.Error(w, "uptime dashboard unavailable", http.StatusInternalServerError)
 		return

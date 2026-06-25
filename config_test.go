@@ -30,6 +30,12 @@ func TestConfigValidationAndDefaults(t *testing.T) {
 	if cfg.RetentionDays != 90 || cfg.DaysToShow != 90 {
 		t.Fatalf("unexpected days: retention=%d show=%d", cfg.RetentionDays, cfg.DaysToShow)
 	}
+	if cfg.Snapshot.CacheTTL != cfg.SampleInterval {
+		t.Fatalf("snapshot cache ttl = %s", cfg.Snapshot.CacheTTL)
+	}
+	if cfg.Snapshot.DisableCache || cfg.Snapshot.DisableStaleIfError {
+		t.Fatalf("unexpected snapshot flags: %+v", cfg.Snapshot)
+	}
 	if cfg.UI.Path != "/uptime" {
 		t.Fatalf("ui path = %q", cfg.UI.Path)
 	}
@@ -76,6 +82,45 @@ func TestUIConfigValidation(t *testing.T) {
 		},
 	}).normalized(); err == nil {
 		t.Fatal("expected invalid background error")
+	}
+}
+
+func TestSnapshotConfigValidation(t *testing.T) {
+	base := DefaultConfig()
+	base.ServiceID = "api"
+	base.Store = &memoryStore{}
+	base.SampleInterval = 10 * time.Second
+	defaulted, err := base.normalized()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaulted.Snapshot.CacheTTL != 10*time.Second {
+		t.Fatalf("snapshot cache ttl should follow sample interval, got %s", defaulted.Snapshot.CacheTTL)
+	}
+
+	if _, err := (Config{
+		ServiceID: "api",
+		Store:     &memoryStore{},
+		Snapshot: SnapshotConfig{
+			CacheTTL: time.Millisecond,
+		},
+	}).normalized(); err == nil {
+		t.Fatal("expected invalid snapshot cache ttl error")
+	}
+
+	cfg, err := (Config{
+		ServiceID: "api",
+		Store:     &memoryStore{},
+		Snapshot: SnapshotConfig{
+			CacheTTL:     time.Millisecond,
+			DisableCache: true,
+		},
+	}).normalized()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Snapshot.DisableCache {
+		t.Fatalf("snapshot config = %+v", cfg.Snapshot)
 	}
 }
 

@@ -1,5 +1,17 @@
 # uptime
 
+<p align="center">
+  <img src="https://img.shields.io/badge/License-MIT-6C757D?style=flat&color=3B82F6" alt="License">&nbsp&nbsp&nbsp
+  <img src="https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=flat&logo=go&logoColor=white" alt="Go Version">&nbsp&nbsp&nbsp
+  <a href="https://github.com/gofurry/uptime/actions/workflows/ci.yml"><img src="https://github.com/gofurry/uptime/actions/workflows/ci.yml/badge.svg" alt="CI"></a>&nbsp&nbsp&nbsp
+  <a href="https://goreportcard.com/report/github.com/gofurry/uptime"><img src="https://goreportcard.com/badge/github.com/gofurry/uptime" alt="Go Report Card"></a>&nbsp&nbsp&nbsp
+</p>
+
+<p align="left">
+  English |
+  <a href="docs/zh/README.md">中文</a>
+</p>
+
 Tiny uptime history middleware for Go `net/http`.
 
 - Records heartbeat samples in the background
@@ -7,6 +19,10 @@ Tiny uptime history middleware for Go `net/http`.
 - Uses SQLite for single-machine deployments, or PostgreSQL for shared multi-instance deployments
 - Works without Prometheus, Grafana, or an external monitor
 - Complements `gofurry/monitor`: monitor shows current runtime state, uptime shows historical availability
+
+<p align="center">
+  <img src="docs/releases/preview.png" alt="uptime dashboard preview">
+</p>
 
 ## Install
 
@@ -76,7 +92,7 @@ mux.Handle("/uptime", up.Handler())
 mux.Handle("/uptime/", up.Handler())
 ```
 
-`Middleware` is a pass-through adapter in v0.1.0. It is provided for normal `net/http` integration style and future request-aware features.
+`Middleware` is a pass-through adapter. It is provided for normal `net/http` integration style and future request-aware features.
 
 ## PostgreSQL
 
@@ -165,6 +181,28 @@ defer p.Close()
 
 A successful probe writes a heartbeat for its synthetic service. A failed probe writes nothing, so missing slots naturally appear as downtime in the existing dashboard.
 
+## Snapshots and Custom UI
+
+The built-in dashboard and JSON API use `CachedSnapshot` to avoid querying the store on every request. You can use the same API to build your own page or copy the status into Redis, Memcached, or another application cache:
+
+```go
+snapshot, err := up.CachedSnapshot(r.Context())
+if err != nil {
+	http.Error(w, "uptime unavailable", http.StatusInternalServerError)
+	return
+}
+
+_ = json.NewEncoder(w).Encode(snapshot)
+```
+
+Use `Snapshot(ctx)` when you explicitly need a fresh store read:
+
+```go
+fresh, err := up.Snapshot(ctx)
+```
+
+`Snapshot` and `CachedSnapshot` return the same structure as `/uptime/api/status`.
+
 ## Configuration
 
 `ServiceID` and `Store` are required. The core package does not import SQLite automatically.
@@ -177,6 +215,9 @@ Defaults:
 | `RetentionDays` | `90` |
 | `DaysToShow` | `90` |
 | `Timezone` | `time.Local` |
+| `Snapshot.CacheTTL` | `SampleInterval` |
+| `Snapshot.DisableCache` | `false` |
+| `Snapshot.DisableStaleIfError` | `false` |
 | `UI.Title` | `GoFurry Uptime` |
 | `UI.Description` | `Historical uptime for Go services sharing this storage.` |
 | `UI.Footer` | `Powered by github.com/gofurry/uptime - MIT License.` |
@@ -253,10 +294,14 @@ Daily bars use a custom hover card instead of the browser's native tooltip. The 
 
 ## Concurrency
 
-`Uptime` instances and the SQLite store are safe for concurrent use after construction. Runtime heartbeat failures are recorded in memory and shown as degraded storage status; they do not affect business handlers.
+`Uptime` instances and the SQLite store are safe for concurrent use after construction. Snapshot cache reads are protected by a mutex and return cloned payloads, so caller-side mutation does not affect the internal cache. Runtime heartbeat failures are recorded in memory and shown as degraded storage status; they do not affect business handlers.
 
-## Compatibility
-
-This module targets Go 1.22.
+## Storage Extensibility
 
 SQLite and PostgreSQL stores are provided. Additional databases can be added through the existing `Store` interface.
+
+## Related Documents
+
+- [中文文档](docs/zh/README.md)
+- [Contributing](CONTRIBUTING.md) / [贡献指南](docs/zh/CONTRIBUTING.md)
+- [Security Policy](SECURITY.md) / [安全政策](docs/zh/SECURITY.md)

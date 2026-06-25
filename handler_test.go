@@ -137,7 +137,7 @@ func TestHandlerQueryError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer up.Close()
-	store.queryErr = errors.New("query failed")
+	store.setQueryErr(errors.New("query failed"))
 
 	rec := httptest.NewRecorder()
 	up.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/uptime", nil))
@@ -226,6 +226,213 @@ func TestBuildStatusUsesServiceSampleInterval(t *testing.T) {
 	}
 	if slow.Daily[1].ExpectedSlots != 7 || slow.Daily[1].EstimatedDowntimeSeconds != 40 {
 		t.Fatalf("slow today = %+v", slow.Daily[1])
+	}
+}
+
+func TestCachedSnapshotUsesTTL(t *testing.T) {
+	store := &memoryStore{}
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	store.setService(Service{
+		ID:             "api",
+		Name:           "API",
+		CreatedAt:      now.Add(-time.Hour),
+		LastSeenAt:     now,
+		SampleInterval: time.Second,
+	})
+
+	cfg, err := (Config{
+		ServiceID:      "viewer",
+		SampleInterval: time.Second,
+		Timezone:       time.UTC,
+		Store:          store,
+		Snapshot: SnapshotConfig{
+			CacheTTL: time.Minute,
+		},
+	}).normalized()
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &Uptime{config: cfg, store: store}
+
+	first, err := up.CachedSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	listCalls, dailyCalls, todayCalls := store.queryCounts()
+
+	second, err := up.CachedSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotList, gotDaily, gotToday := store.queryCounts(); gotList != listCalls || gotDaily != dailyCalls || gotToday != todayCalls {
+		t.Fatalf("cache miss inside ttl: before=%d/%d/%d after=%d/%d/%d", listCalls, dailyCalls, todayCalls, gotList, gotDaily, gotToday)
+	}
+	if second.GeneratedAt != first.GeneratedAt {
+		t.Fatalf("cached generated_at changed: first=%s second=%s", first.GeneratedAt, second.GeneratedAt)
+	}
+
+	second.Services[0].Name = "mutated"
+	third, err := up.CachedSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Services[0].Name != "API" {
+		t.Fatalf("snapshot cache was mutated by caller: %+v", third.Services[0])
+	}
+}
+
+func TestSnapshotBypassesCache(t *testing.T) {
+	store := &memoryStore{}
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	store.setService(Service{
+		ID:             "api",
+		Name:           "API",
+		CreatedAt:      now.Add(-time.Hour),
+		LastSeenAt:     now,
+		SampleInterval: time.Second,
+	})
+
+	cfg, err := (Config{
+		ServiceID:      "viewer",
+		SampleInterval: time.Second,
+		Timezone:       time.UTC,
+		Store:          store,
+		Snapshot: SnapshotConfig{
+			CacheTTL: time.Minute,
+		},
+	}).normalized()
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &Uptime{config: cfg, store: store}
+
+	cached, err := up.CachedSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached.Services[0].Name != "API" {
+		t.Fatalf("cached name = %q", cached.Services[0].Name)
+	}
+
+	store.setService(Service{
+		ID:             "api",
+		Name:           "API v2",
+		CreatedAt:      now.Add(-time.Hour),
+		LastSeenAt:     now,
+		SampleInterval: time.Second,
+	})
+
+	fresh, err := up.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Services[0].Name != "API v2" {
+		t.Fatalf("fresh snapshot did not bypass cache: %+v", fresh.Services[0])
+	}
+
+	stillCached, err := up.CachedSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stillCached.Services[0].Name != "API" {
+		t.Fatalf("cached snapshot unexpectedly refreshed: %+v", stillCached.Services[0])
+	}
+}
+
+func TestCachedSnapshotReturnsStaleOnRefreshError(t *testing.T) {
+	store := &memoryStore{}
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	store.setService(Service{
+		ID:             "api",
+		Name:           "API",
+		CreatedAt:      now.Add(-time.Hour),
+		LastSeenAt:     now,
+		SampleInterval: time.Second,
+	})
+
+	cfg, err := (Config{
+		ServiceID:      "viewer",
+		SampleInterval: time.Second,
+		Timezone:       time.UTC,
+		Store:          store,
+		Snapshot: SnapshotConfig{
+			CacheTTL: time.Second,
+		},
+	}).normalized()
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &Uptime{config: cfg, store: store}
+
+	seed, err := up.CachedSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	up.snapshotMu.Lock()
+	up.snapshotCachedAt = time.Now().Add(-2 * time.Second)
+	up.snapshotMu.Unlock()
+	store.setQueryErr(errors.New("database offline"))
+
+	stale, err := up.CachedSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.GeneratedAt != seed.GeneratedAt {
+		t.Fatalf("expected stale generated_at: seed=%s stale=%s", seed.GeneratedAt, stale.GeneratedAt)
+	}
+	if stale.Storage.Status != "degraded" || !strings.Contains(stale.Storage.LastError, "database offline") {
+		t.Fatalf("storage status = %+v", stale.Storage)
+	}
+}
+
+func TestCachedSnapshotCanDisableStaleOnError(t *testing.T) {
+	store := &memoryStore{}
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	store.setService(Service{
+		ID:             "api",
+		Name:           "API",
+		CreatedAt:      now.Add(-time.Hour),
+		LastSeenAt:     now,
+		SampleInterval: time.Second,
+	})
+
+	cfg, err := (Config{
+		ServiceID:      "viewer",
+		SampleInterval: time.Second,
+		Timezone:       time.UTC,
+		Store:          store,
+		Snapshot: SnapshotConfig{
+			CacheTTL:            time.Second,
+			DisableStaleIfError: true,
+		},
+	}).normalized()
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &Uptime{config: cfg, store: store}
+
+	if _, err := up.CachedSnapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	up.snapshotMu.Lock()
+	up.snapshotCachedAt = time.Now().Add(-2 * time.Second)
+	up.snapshotMu.Unlock()
+	store.setQueryErr(errors.New("database offline"))
+
+	if _, err := up.CachedSnapshot(context.Background()); err == nil {
+		t.Fatal("expected refresh error")
 	}
 }
 
@@ -337,11 +544,14 @@ func TestAlertHookNotifyOnFirstDown(t *testing.T) {
 }
 
 type memoryStore struct {
-	mu          sync.Mutex
-	services    map[string]Service
-	samples     map[string]map[string]map[int64]struct{}
-	alertStates map[string]AlertState
-	queryErr    error
+	mu                sync.Mutex
+	services          map[string]Service
+	samples           map[string]map[string]map[int64]struct{}
+	alertStates       map[string]AlertState
+	queryErr          error
+	listServicesCalls int
+	queryDailyCalls   int
+	todaySamplesCalls int
 }
 
 func (s *memoryStore) Init(context.Context) error {
@@ -357,6 +567,27 @@ func (s *memoryStore) Init(context.Context) error {
 		s.alertStates = make(map[string]AlertState)
 	}
 	return nil
+}
+
+func (s *memoryStore) setService(service Service) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.services == nil {
+		s.services = make(map[string]Service)
+	}
+	s.services[service.ID] = service
+}
+
+func (s *memoryStore) setQueryErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queryErr = err
+}
+
+func (s *memoryStore) queryCounts() (listServices, daily, today int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listServicesCalls, s.queryDailyCalls, s.todaySamplesCalls
 }
 
 func (s *memoryStore) UpsertService(_ context.Context, service Service) error {
@@ -404,6 +635,7 @@ func (s *memoryStore) Cleanup(context.Context, CleanupOptions) error {
 func (s *memoryStore) ListServices(context.Context) ([]Service, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.listServicesCalls++
 	if s.queryErr != nil {
 		return nil, s.queryErr
 	}
@@ -415,12 +647,22 @@ func (s *memoryStore) ListServices(context.Context) ([]Service, error) {
 }
 
 func (s *memoryStore) QueryDaily(context.Context, QueryDailyOptions) ([]DailyStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queryDailyCalls++
+	if s.queryErr != nil {
+		return nil, s.queryErr
+	}
 	return nil, nil
 }
 
 func (s *memoryStore) QueryTodaySamples(_ context.Context, options QueryTodaySamplesOptions) ([]TodaySampleStatus, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.todaySamplesCalls++
+	if s.queryErr != nil {
+		return nil, s.queryErr
+	}
 	var statuses []TodaySampleStatus
 	for serviceID, byDay := range s.samples {
 		slots := byDay[options.Day]
