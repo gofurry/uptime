@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="{{ .DefaultLanguage }}" data-theme="{{ .DefaultTheme }}" data-background="{{ .Background }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="{{ .Description }}">
+  <title>{{ .Title }}</title>
+  <style>{{ .CSS }}</style>
+</head>
+<body>
+  <main>
+    <header class="header">
+      <div class="header-main">
+        <h1>{{ .Title }}</h1>
+      </div>
+      <div class="header-side">
+        <div class="status-box">
+          <span class="status-controls" aria-label="Display preferences">
+            <button type="button" id="lang-toggle" class="control-dot" title="Language"><span class="visually-hidden">Language</span></button>
+            <button type="button" id="theme-toggle" class="control-dot" title="Theme"><span class="visually-hidden">Theme</span></button>
+          </span>
+          <div class="status-line">
+            <span class="status-state">
+              <span id="live-dot" data-status="live"></span>
+              <span id="live-text" data-i18n="live">LIVE</span>
+            </span>
+          </div>
+          <span id="updated-at">-</span>
+          <span id="response-time">-</span>
+        </div>
+      </div>
+    </header>
+    <div class="header-divider" aria-hidden="true"></div>
+    <aside class="description-card" aria-label="Page description">
+      <p>{{ .Description }}</p>
+    </aside>
+
+    <section class="services" id="services" aria-label="Services"></section>
+    <footer>{{ .Footer }}</footer>
+  </main>
+
+  <button id="page-scroll-dock" class="page-scroll-dock" type="button" title="Scroll up" aria-label="Scroll progress 0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <span id="page-scroll-dock-value" class="page-scroll-dock__core">0%</span>
+  </button>
+  <div id="uptime-hovercard" class="hovercard" role="tooltip" hidden></div>
+  <script>window.uptimeConfig = {{ .ConfigJSON }};</script>
+  <script>window.uptimeInitialStatus = {{ .StatusJSON }};</script>
+  <script>{{ .JS }}</script>
+</body>
+</html>
